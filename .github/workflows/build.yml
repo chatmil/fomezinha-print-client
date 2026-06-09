@@ -1,0 +1,140 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Generate icon.ico from favicon.svg
+        run: |
+          python -c "
+          import re, base64, io
+          from PIL import Image
+          svg = open('favicon.svg', 'r', encoding='utf-8').read()
+          import re
+          match = re.search(r'xlink:href=\"data:image/png;base64,([^\"]+)\"', svg)
+          if match:
+              from PIL import Image
+              import io, base64
+              data = base64.b64decode(match.group(1).strip())
+              img = Image.open(io.BytesIO(data)).convert('RGBA').resize((1024,1024), Image.LANCZOS)
+          else:
+              img = Image.new('RGBA', (1024,1024), (255,107,53,255))
+          img.resize((256,256), Image.LANCZOS).save('icon.png')
+          img.save('icon.ico', format='ICO', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])
+          print('Icones gerados.')
+          "
+
+      - name: Build .exe with PyInstaller
+        run: |
+          pyinstaller `
+            --onefile `
+            --windowed `
+            --name "FomezinhaPrint" `
+            --icon icon.ico `
+            --add-data "icon.ico;." `
+            --add-data "icon.png;." `
+            --hidden-import pystray._win32 `
+            --hidden-import PIL._tkinter_finder `
+            --noconfirm `
+            --clean `
+            fomezinha_print.py
+
+      - name: Upload .exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FomezinhaPrint-Windows
+          path: dist/FomezinhaPrint.exe
+          retention-days: 30
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Generate icons
+        run: |
+          python3 - << 'PYEOF'
+          import re, base64, io, os
+          from PIL import Image
+          svg = open('favicon.svg', 'r', encoding='utf-8').read()
+          match = re.search(r'xlink:href="data:image/png;base64,([^"]+)"', svg)
+          if match:
+              data = base64.b64decode(match.group(1).strip())
+              img = Image.open(io.BytesIO(data)).convert('RGBA').resize((1024,1024), Image.LANCZOS)
+          else:
+              img = Image.new('RGBA', (1024,1024), (255,107,53,255))
+          img.resize((256,256), Image.LANCZOS).save('icon.png')
+          iconset = 'icon.iconset'
+          os.makedirs(iconset, exist_ok=True)
+          for s in [16,32,64,128,256,512,1024]:
+              img.resize((s,s), Image.LANCZOS).save(f'{iconset}/icon_{s}x{s}.png')
+              if s <= 512:
+                  img.resize((s*2,s*2), Image.LANCZOS).save(f'{iconset}/icon_{s}x{s}@2x.png')
+          PYEOF
+          iconutil -c icns icon.iconset -o icon.icns
+          rm -rf icon.iconset
+
+      - name: Build .app with PyInstaller
+        run: |
+          pyinstaller \
+            --onedir \
+            --windowed \
+            --name "FomezinhaPrint" \
+            --icon icon.icns \
+            --add-data "icon.png:." \
+            --add-data "icon.icns:." \
+            --hidden-import pystray._darwin \
+            --hidden-import PIL._tkinter_finder \
+            --osx-bundle-identifier "com.fomezinha.print" \
+            --noconfirm \
+            --clean \
+            fomezinha_print.py
+
+      - name: Create .dmg
+        run: |
+          STAGING=$(mktemp -d)
+          cp -R dist/FomezinhaPrint.app "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create \
+            -volname "Fomezinha Print" \
+            -srcfolder "$STAGING" \
+            -ov -format UDZO \
+            -imagekey zlib-level=9 \
+            dist/FomezinhaPrint.dmg
+          rm -rf "$STAGING"
+
+      - name: Upload .dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FomezinhaPrint-macOS
+          path: dist/FomezinhaPrint.dmg
+          retention-days: 30
